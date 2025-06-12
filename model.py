@@ -3,11 +3,12 @@
 
 # %%
 import os
+import cv2
 import random
 import shutil
 import numpy as np
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageFilter  # Import ImageFilter
 from tensorflow.keras.preprocessing.image import load_img, img_to_array
 from tensorflow.keras.utils import to_categorical
 import tensorflow as tf
@@ -18,11 +19,17 @@ from tensorflow.keras.optimizers import Adam
 from sklearn.metrics import confusion_matrix, classification_report, roc_curve, auc
 import matplotlib.pyplot as plt
 import seaborn as sns
+from skimage import measure, morphology, exposure # Import measure, morphology, and exposure
 
 # Pastikan TensorFlow versi yang sesuai (opsional)
 # !pip install tensorflow==2.15.0
 # Pastikan Pandas terinstal jika belum ada
 # !pip install pandas
+# Pastikan scikit-image terinstal
+# !pip install scikit-image
+# Pastikan Pillow terinstal
+# !pip install Pillow
+
 
 # %% [markdown]
 # **1. Setup dan Persiapan Data**
@@ -35,9 +42,9 @@ drive.mount('/content/drive')
 # Definisikan path ke dataset Anda di Google Drive
 normal_dir = "/content/drive/MyDrive/Kuliah/xray_tb_normal/Normal"
 tb_dir = "/content/drive/MyDrive/Kuliah/xray_tb_normal/Tuberculosis"
-output_viz_dir = "/content/drive/MyDrive/Kuliah/xray_tb_normal/visualizations" # Direktori untuk menyimpan visualisasi
-base_save_dir = "/content/drive/MyDrive/Kuliah/xray_tb_normal/exported_models" # Direktori untuk menyimpan model yang diekspor
-history_csv_path = "/content/drive/MyDrive/Kuliah/xray_tb_normal/training_history.csv" # Path untuk menyimpan riwayat pelatihan CSV
+output_viz_dir = "/content/drive/MyDrive/Kuliah/xray_tb_normal/visualizations_fiks" # Direktori untuk menyimpan visualisasi
+base_save_dir = "/content/drive/MyDrive/Kuliah/xray_tb_normal/exported_models_fiks" # Direktori untuk menyimpan model yang diekspor
+history_csv_path = "/content/drive/MyDrive/Kuliah/xray_tb_normal/training_history_fiks.csv" # Path untuk menyimpan riwayat pelatihan CSV
 
 
 # Buat direktori output visualisasi jika belum ada
@@ -69,8 +76,8 @@ random.shuffle(combined_data)
 all_files, all_labels = zip(*combined_data)
 
 # Tentukan jumlah sampel untuk pelatihan dan pengujian sesuai jurnal
-num_train_per_class = 500
-num_test_per_class = 200
+num_train_per_class = 400
+num_test_per_class = 300
 
 # Pisahkan kembali file berdasarkan kelas untuk pemisahan yang terkontrol
 normal_files_shuffled = [f for f, label in zip(all_files, all_labels) if label == 0]
@@ -96,14 +103,46 @@ print(f"Jumlah sampel pengujian: {len(test_files)}")
 # Definisikan dimensi gambar
 img_width, img_height = 224, 224
 
-def load_and_preprocess_image(filepath, label, target_size=(img_width, img_height)):
-    """Memuat, mengubah ukuran, dan memproses gambar tunggal."""
+def load_and_preprocess_image(filepath, label, target_size=(224, 224)):
     try:
-        img = load_img(filepath, target_size=target_size)
-        img_array = img_to_array(img)
-        # Normalisasi nilai piksel ke rentang [0, 1]
-        img_array = img_array / 255.0
-        return img_array, label
+        # 1. Load image in grayscale
+        img = load_img(filepath, color_mode='grayscale', target_size=target_size)
+        gray = img_to_array(img).squeeze().astype(np.uint8)  # shape: (H, W)
+
+        # 2. Thresholding to find diaphragm (brightest area)
+        Vmin, Vmax = np.min(gray), np.max(gray)
+        T = Vmin + 0.9 * (Vmax - Vmin)
+        binary = (gray >= T).astype(np.uint8)
+
+        # 3. Label connected components and find largest
+        labeled = measure.label(binary, connectivity=2)
+        props = measure.regionprops(labeled)
+        if not props:
+            mask = np.zeros_like(gray, dtype=bool)
+        else:
+            largest = max(props, key=lambda x: x.area)
+            mask = (labeled == largest.label)
+
+        # 4. Morphological smoothing (closing and opening)
+        mask = morphology.binary_closing(mask, morphology.disk(3))
+        mask = morphology.binary_opening(mask, morphology.disk(3))
+
+        # 5. Remove diaphragm region from image
+        Ip = np.where(mask, 0, gray).astype(np.uint8)
+
+        # 6. Apply bilateral filter (manual approximation using PIL filter)
+        pil_img = Image.fromarray(Ip)
+        Ib = np.array(pil_img.filter(ImageFilter.ModeFilter(size=9)))  # crude bilateral approximation
+
+        # 7. Histogram Equalization
+        Ieq = exposure.equalize_hist(Ip)
+        Ieq = (Ieq * 255).astype(np.uint8)
+
+        # 8. Stack as pseudo-RGB
+        pseudo_rgb = np.stack([Ip, Ib, Ieq], axis=-1).astype(np.float32) / 255.0
+
+        return pseudo_rgb, label
+
     except Exception as e:
         print(f"Error memuat atau memproses gambar {filepath}: {e}")
         return None, None
