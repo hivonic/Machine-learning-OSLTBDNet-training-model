@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from skimage import measure, morphology, exposure # Import measure, morphology, and exposure
 
-# Pastikan TensorFlow versi yang sesuai (opsional)
+# Pastikan TensorFlow versi yang sesuai (optional)
 # !pip install tensorflow==2.15.0
 # Pastikan Pandas terinstal jika belum ada
 # !pip install pandas
@@ -109,7 +109,7 @@ def load_and_preprocess_image(filepath, label, target_size=(224, 224)):
         img = load_img(filepath, color_mode='grayscale', target_size=target_size)
         gray = img_to_array(img).squeeze().astype(np.uint8)  # shape: (H, W)
 
-        # 2. Thresholding to find diaphragm (brightest area)
+        # 2. Adaptive masking: Thresholding to find diaphragm (brightest area)
         Vmin, Vmax = np.min(gray), np.max(gray)
         T = Vmin + 0.9 * (Vmax - Vmin)
         binary = (gray >= T).astype(np.uint8)
@@ -127,18 +127,17 @@ def load_and_preprocess_image(filepath, label, target_size=(224, 224)):
         mask = morphology.binary_closing(mask, morphology.disk(3))
         mask = morphology.binary_opening(mask, morphology.disk(3))
 
-        # 5. Remove diaphragm region from image
+        # 5. Remove diaphragm region from image using the mask
         Ip = np.where(mask, 0, gray).astype(np.uint8)
 
-        # 6. Apply bilateral filter (manual approximation using PIL filter)
-        pil_img = Image.fromarray(Ip)
-        Ib = np.array(pil_img.filter(ImageFilter.ModeFilter(size=9)))  # crude bilateral approximation
+        # 6. Apply Gaussian blur to the image after diaphragm removal
+        Ib = cv2.GaussianBlur(Ip, (5, 5), 0) # Using OpenCV for Gaussian Blur
 
-        # 7. Histogram Equalization
+        # 7. Histogram Equalization to the image after diaphragm removal
         Ieq = exposure.equalize_hist(Ip)
         Ieq = (Ieq * 255).astype(np.uint8)
 
-        # 8. Stack as pseudo-RGB
+        # 8. Stack the original (after diaphragm removal), Gaussian blurred, and histogram equalized images as pseudo-RGB
         pseudo_rgb = np.stack([Ip, Ib, Ieq], axis=-1).astype(np.float32) / 255.0
 
         return pseudo_rgb, label
